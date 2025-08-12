@@ -74,7 +74,7 @@ def ensure_person_page(notion_db_id: str, person_name: str) -> str:
         **{
             "database_id": notion_db_id,
             "filter": {
-                "property": "Name",
+                "property": "メンバー名",
                 "title": {"equals": person_name}
             }
         }
@@ -86,7 +86,7 @@ def ensure_person_page(notion_db_id: str, person_name: str) -> str:
         **{
             "parent": {"database_id": notion_db_id},
             "properties": {
-                "Name": {"title": [{"type": "text", "text": {"content": person_name}}]}
+                "メンバー名": {"title": [{"type": "text", "text": {"content": person_name}}]}
             }
         }
     )
