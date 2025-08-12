@@ -25,6 +25,10 @@ notion = NotionClient(auth=NOTION_TOKEN)
 JST = pytz.timezone("Asia/Tokyo")
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "3"))  # 直近何日分見るか（保険）
 
+# 評価期間の設定
+EVALUATION_START_MONTH = 4  # 4月開始
+EVALUATION_START_DAY = 1    # 1日開始
+
 # 必要なら Slack名→Notion名の手動マッピング（任意）
 NAME_ALIAS_MAP = {
     # "Ayumu Miyamoto": "宮本 渉 / Ayumu Miyamoto",
@@ -67,9 +71,57 @@ def get_user_name(user_id: str) -> str:
     except SlackApiError:
         return user_id
 
+def get_evaluation_period(date: datetime) -> tuple[int, int]:
+    """
+    日付から評価期間（開始年、終了年）を取得
+    例: 2025-08-12 → (2025, 2026)  # 2025年4月1日〜2026年3月31日
+    """
+    year = date.year
+    month = date.month
+    
+    # 4月以降はその年の評価期間、3月以前は前年の評価期間
+    if month >= EVALUATION_START_MONTH:
+        return year, year + 1
+    else:
+        return year - 1, year
+
+def get_evaluation_period_name(start_year: int, end_year: int) -> str:
+    """評価期間の名前を生成"""
+    return f"{start_year}年度評価期間 ({start_year}.4.1〜{end_year}.3.31)"
+
+def get_evaluation_period_page_title(start_year: int, end_year: int) -> str:
+    """評価期間のページタイトルを生成"""
+    return f"{start_year}年度日報一覧"
+
+def ensure_evaluation_period_page(notion_db_id: str, start_year: int, end_year: int) -> str:
+    """評価期間のページがなければ作り、ページIDを返す"""
+    page_title = get_evaluation_period_page_title(start_year, end_year)
+    
+    res = notion.databases.query(
+        **{
+            "database_id": notion_db_id,
+            "filter": {
+                "property": "メンバー名",
+                "title": {"equals": page_title}
+            }
+        }
+    )
+    if res["results"]:
+        return res["results"][0]["id"]
+
+    created = notion.pages.create(
+        **{
+            "parent": {"database_id": notion_db_id},
+            "properties": {
+                "メンバー名": {"title": [{"type": "text", "text": {"content": page_title}}]}
+            }
+        }
+    )
+    return created["id"]
+
 # ====== Notion Interactions ======
 def ensure_person_page(notion_db_id: str, person_name: str) -> str:
-    """DB内に人のページがなければ作り、ページIDを返す"""
+    """DB内に人のページがなければ作り、ページIDを返す（従来の方法）"""
     res = notion.databases.query(
         **{
             "database_id": notion_db_id,
@@ -87,6 +139,35 @@ def ensure_person_page(notion_db_id: str, person_name: str) -> str:
             "parent": {"database_id": notion_db_id},
             "properties": {
                 "メンバー名": {"title": [{"type": "text", "text": {"content": person_name}}]}
+            }
+        }
+    )
+    return created["id"]
+
+def ensure_person_page_in_parent(parent_page_id: str, person_name: str) -> str:
+    """親ページ内に人のページがなければ作り、ページIDを返す"""
+    # 親ページの子ページを検索
+    cursor = None
+    while True:
+        children = notion.blocks.children.list(block_id=parent_page_id, start_cursor=cursor)
+        for child in children["results"]:
+            if child.get("type") == "child_page":
+                # ページの詳細情報を取得
+                page_info = notion.pages.retrieve(child["id"])
+                title = page_info.get("properties", {}).get("title", {}).get("title", [])
+                if title and title[0].get("plain_text") == person_name:
+                    return child["id"]
+        
+        if not children.get("has_more"):
+            break
+        cursor = children.get("next_cursor")
+    
+    # 見つからない場合は新しいページを作成
+    created = notion.pages.create(
+        **{
+            "parent": {"page_id": parent_page_id},
+            "properties": {
+                "title": {"title": [{"type": "text", "text": {"content": person_name}}]}
             }
         }
     )
@@ -195,8 +276,8 @@ def run():
     messages.sort(key=lambda m: float(m["ts"]))
     print(f"📅 メッセージを時系列順にソートしました")
 
-    # ユーザーごと、日付（JST）ごとに「やったこと」行を蓄積
-    bucket: dict[tuple[str, str], list[str]] = {}
+    # ユーザーごと、評価期間ごと、日付（JST）ごとに「やったこと」行を蓄積
+    bucket: dict[tuple[str, int, int, str], list[str]] = {}
     
     print("\n🔍 日報メッセージを解析中...")
     
@@ -228,6 +309,11 @@ def run():
         date_str = jst_date_str_from_ts(msg["ts"])
         print(f"   日付: {date_str}")
         
+        # 評価期間を取得
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        start_year, end_year = get_evaluation_period(date_obj)
+        print(f"   評価期間: {start_year}年度 ({start_year}.4.1〜{end_year}.3.31)")
+        
         # 箇条書きに分割（・ / - / 行頭番号など大雑把に）
         lines = [s.strip(" ・-　") for s in re.split(r"\n+", done) if s.strip()]
         print(f"   箇条書き行数: {len(lines)}")
@@ -236,8 +322,8 @@ def run():
             print("   ❌ 有効な箇条書きが見つかりません")
             continue
 
-        bucket.setdefault((person, date_str), []).extend(lines)
-        print(f"   ✅ バケットに追加: {person} - {date_str}")
+        bucket.setdefault((person, start_year, end_year, date_str), []).extend(lines)
+        print(f"   ✅ バケットに追加: {person} - {start_year}年度 - {date_str}")
 
     print(f"\n📦 処理対象: {len(bucket)} 件のユーザー・日付の組み合わせ")
     
@@ -252,14 +338,19 @@ def run():
     # Notion 反映
     print(f"\n📝 Notionデータベースに反映中...")
     
-    for (person, date_str), lines in bucket.items():
-        print(f"\n👤 {person} ({date_str}) を処理中...")
+    for (person, start_year, end_year, date_str), lines in bucket.items():
+        print(f"\n👤 {person} ({start_year}年度 - {date_str}) を処理中...")
         
         try:
-            page_id = ensure_person_page(NOTION_DB_ID, person)
-            print(f"   ✅ ユーザーページ取得/作成: {page_id}")
+            # 評価期間のページを取得/作成
+            period_page_id = ensure_evaluation_period_page(NOTION_DB_ID, start_year, end_year)
+            print(f"   ✅ 評価期間ページ取得/作成: {period_page_id}")
             
-            toggle_id = find_toggle_block_by_title(page_id, date_str)
+            # ユーザーページを評価期間ページの子として作成
+            user_page_id = ensure_person_page_in_parent(period_page_id, person)
+            print(f"   ✅ ユーザーページ取得/作成: {user_page_id}")
+            
+            toggle_id = find_toggle_block_by_title(user_page_id, date_str)
             if toggle_id:
                 print(f"   🔄 既存の日付トグルを更新: {toggle_id}")
                 existing = list_paragraph_texts(toggle_id)
@@ -267,7 +358,7 @@ def run():
                 print(f"   ✅ 既存トグルに {len(lines)} 行を追加")
             else:
                 print(f"   ➕ 新しい日付トグルを作成")
-                append_toggle_with_paragraphs(page_id, date_str, lines)
+                append_toggle_with_paragraphs(user_page_id, date_str, lines)
                 print(f"   ✅ 新しいトグルに {len(lines)} 行を追加")
                 
         except Exception as e:
