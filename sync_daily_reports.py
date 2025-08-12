@@ -164,9 +164,16 @@ def append_paragraphs_to_toggle(toggle_id: str, lines: list[str], existing: set[
 
 # ====== Slack → Notion メイン処理 ======
 def run():
+    print("🚀 Slack日報同期を開始します...")
+    
     oldest = time.time() - LOOKBACK_DAYS * 86400
+    print(f"📅 遡及期間: {LOOKBACK_DAYS}日分（{datetime.fromtimestamp(oldest, tz=JST).strftime('%Y-%m-%d %H:%M:%S')} JST 以降）")
+    
     cursor = None
     messages = []
+    
+    print(f"📡 Slackチャンネル {SLACK_CHANNEL_ID} からメッセージを取得中...")
+    
     while True:
         resp = slack.conversations_history(
             channel=SLACK_CHANNEL_ID,
@@ -174,47 +181,99 @@ def run():
             limit=200,
             cursor=cursor
         )
-        messages.extend(resp.get("messages", []))
+        batch_messages = resp.get("messages", [])
+        messages.extend(batch_messages)
+        print(f"📥 バッチ取得: {len(batch_messages)}件のメッセージ")
+        
         if not resp.get("has_more"):
             break
         cursor = resp.get("response_metadata", {}).get("next_cursor")
+    
+    print(f"📊 合計 {len(messages)} 件のメッセージを取得しました")
 
     # 新しい順で来るので時系列に揃える
     messages.sort(key=lambda m: float(m["ts"]))
+    print(f"📅 メッセージを時系列順にソートしました")
 
     # ユーザーごと、日付（JST）ごとに「やったこと」行を蓄積
     bucket: dict[tuple[str, str], list[str]] = {}
-
-    for msg in messages:
+    
+    print("\n🔍 日報メッセージを解析中...")
+    
+    for i, msg in enumerate(messages):
         text = msg.get("text", "").strip()
         if not text:
             continue
 
+        print(f"\n📝 メッセージ {i+1}:")
+        print(f"   ユーザー: {msg.get('user', 'bot')}")
+        print(f"   タイムスタンプ: {msg.get('ts')}")
+        print(f"   テキスト長: {len(text)} 文字")
+        
+        # テキストの最初の100文字を表示
+        preview = text[:100] + "..." if len(text) > 100 else text
+        print(f"   プレビュー: {preview}")
+
         done = extract_done_section(text)
         if not done:
+            print("   ❌ 「やったこと」セクションが見つかりません")
             continue
 
+        print(f"   ✅ 「やったこと」セクションを抽出: {len(done)} 文字")
+        
         user_id = msg.get("user") or msg.get("bot_id") or "unknown"
         person = get_user_name(user_id if isinstance(user_id, str) and user_id.startswith("U") else "unknown")
+        print(f"   ユーザー名: {person}")
 
         date_str = jst_date_str_from_ts(msg["ts"])
+        print(f"   日付: {date_str}")
+        
         # 箇条書きに分割（・ / - / 行頭番号など大雑把に）
         lines = [s.strip(" ・-　") for s in re.split(r"\n+", done) if s.strip()]
+        print(f"   箇条書き行数: {len(lines)}")
 
         if not lines:
+            print("   ❌ 有効な箇条書きが見つかりません")
             continue
 
         bucket.setdefault((person, date_str), []).extend(lines)
+        print(f"   ✅ バケットに追加: {person} - {date_str}")
+
+    print(f"\n📦 処理対象: {len(bucket)} 件のユーザー・日付の組み合わせ")
+    
+    if not bucket:
+        print("❌ 処理対象の日報が見つかりませんでした")
+        print("   以下の点を確認してください:")
+        print("   1. Slackチャンネルに日報メッセージが投稿されているか")
+        print("   2. 日報の形式が「やったこと」セクションを含んでいるか")
+        print("   3. 遡及期間（3日）内にメッセージがあるか")
+        return
 
     # Notion 反映
+    print(f"\n📝 Notionデータベースに反映中...")
+    
     for (person, date_str), lines in bucket.items():
-        page_id = ensure_person_page(NOTION_DB_ID, person)
-        toggle_id = find_toggle_block_by_title(page_id, date_str)
-        if toggle_id:
-            existing = list_paragraph_texts(toggle_id)
-            append_paragraphs_to_toggle(toggle_id, lines, existing)
-        else:
-            append_toggle_with_paragraphs(page_id, date_str, lines)
+        print(f"\n👤 {person} ({date_str}) を処理中...")
+        
+        try:
+            page_id = ensure_person_page(NOTION_DB_ID, person)
+            print(f"   ✅ ユーザーページ取得/作成: {page_id}")
+            
+            toggle_id = find_toggle_block_by_title(page_id, date_str)
+            if toggle_id:
+                print(f"   🔄 既存の日付トグルを更新: {toggle_id}")
+                existing = list_paragraph_texts(toggle_id)
+                append_paragraphs_to_toggle(toggle_id, lines, existing)
+                print(f"   ✅ 既存トグルに {len(lines)} 行を追加")
+            else:
+                print(f"   ➕ 新しい日付トグルを作成")
+                append_toggle_with_paragraphs(page_id, date_str, lines)
+                print(f"   ✅ 新しいトグルに {len(lines)} 行を追加")
+                
+        except Exception as e:
+            print(f"   ❌ エラーが発生しました: {e}")
+    
+    print(f"\n🎉 同期完了！ {len(bucket)} 件の日報を処理しました")
 
 if __name__ == "__main__":
     run()
