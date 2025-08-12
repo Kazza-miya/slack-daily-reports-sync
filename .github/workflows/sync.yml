@@ -5,6 +5,8 @@ on:
     # 毎日 20:05 JST 実行（= 11:05 UTC）
     - cron: "5 11 * * *"
   workflow_dispatch: {}
+  push:
+    branches: [ master, main ]
 
 jobs:
   sync:
