@@ -40,6 +40,7 @@ def get_evaluation_year(date: datetime) -> int:
     """
     日付から評価年度を取得
     例: 2025-08-12 → 2025  # 2025年4月1日〜2026年3月31日
+    例: 2025-03-15 → 2024  # 2024年4月1日〜2025年3月31日
     """
     year = date.year
     month = date.month
@@ -92,16 +93,8 @@ def ensure_person_page(notion_db_id: str, person_name: str, evaluation_year: int
         **{
             "database_id": notion_db_id,
             "filter": {
-                "and": [
-                    {
-                        "property": "メンバー名",
-                        "title": {"equals": person_name}
-                    },
-                    {
-                        "property": "該当年",
-                        "select": {"equals": str(evaluation_year)}
-                    }
-                ]
+                "property": "メンバー名",
+                "title": {"equals": person_name}
             }
         }
     )
@@ -112,8 +105,7 @@ def ensure_person_page(notion_db_id: str, person_name: str, evaluation_year: int
         **{
             "parent": {"database_id": notion_db_id},
             "properties": {
-                "メンバー名": {"title": [{"type": "text", "text": {"content": person_name}}]},
-                "該当年": {"select": {"name": str(evaluation_year)}}
+                "メンバー名": {"title": [{"type": "text", "text": {"content": person_name}}]}
             }
         }
     )
