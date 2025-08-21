@@ -88,13 +88,21 @@ def get_user_name(user_id: str) -> str:
 
 # ====== Notion Interactions ======
 def ensure_person_page(notion_db_id: str, person_name: str, evaluation_year: int) -> str:
-    """DB内に人のページがなければ作り、ページIDを返す（該当年プロパティ付き）"""
+    """DB内に人のページがなければ作り、ページIDを返す（評価年度プロパティ付き）"""
     res = notion.databases.query(
         **{
             "database_id": notion_db_id,
             "filter": {
-                "property": "メンバー名",
-                "title": {"equals": person_name}
+                "and": [
+                    {
+                        "property": "メンバー名",
+                        "title": {"equals": person_name}
+                    },
+                    {
+                        "property": "評価年度",
+                        "select": {"equals": str(evaluation_year)}
+                    }
+                ]
             }
         }
     )
@@ -105,7 +113,8 @@ def ensure_person_page(notion_db_id: str, person_name: str, evaluation_year: int
         **{
             "parent": {"database_id": notion_db_id},
             "properties": {
-                "メンバー名": {"title": [{"type": "text", "text": {"content": person_name}}]}
+                "メンバー名": {"title": [{"type": "text", "text": {"content": person_name}}]},
+                "評価年度": {"select": {"name": str(evaluation_year)}}
             }
         }
     )
