@@ -31,6 +31,6 @@ jobs:
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
-          LOOKBACK_DAYS: "30"
+          LOOKBACK_DAYS: "90"
         run: |
           python sync_daily_reports.py
