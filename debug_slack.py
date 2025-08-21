@@ -41,7 +41,7 @@ try:
         # チャンネルのメンバー一覧を取得
         members = slack.conversations_members(channel=SLACK_CHANNEL_ID)
         bot_user_id = auth_test['user_id']
-        is_member = bot_user_id in [m['id'] for m in members['members']]
+        is_member = bot_user_id in [m['id'] for m in members.get('members', [])]
         print(f"✅ Bot ({bot_user_id}) はチャンネルに{'参加済み' if is_member else '未参加'}")
         
         if not is_member:
